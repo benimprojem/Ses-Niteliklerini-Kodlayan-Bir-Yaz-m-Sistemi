@@ -1,5 +1,3 @@
-# Ses-Niteliklerini-Kodlayan-Bir-Yaz-m-Sistemi
-Yazı sistemleri, dijital ses gösterimi ve konuşma sentezi
 # Ses Niteliklerini Kodlayan Bir Yazım Sistemi
 ## Harf, Nota, Ses Şiddeti ve Süre Bilgilerinin Birleşik Gösterimi
 
