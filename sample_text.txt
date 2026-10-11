@@ -1,0 +1,7 @@
+# Example text for the system
+
+Ahmet, neredesin?
+
+Bu cümle normal bir ses ile okunabilir ama aynı zamanda yüksek ses ve uzatılmış ton ile de okunabilir.
+
+Fısıltı ile konuşma, sessiz dudak hareketi ve bağırma birimleri ayrı ayrı tanımlanmalıdır.
