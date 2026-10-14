@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Ses Nitelikli Metin Editörü ve Görselleştirici</title>
+    <style>
+        body {
+            font-family: 'Courier New', Courier, monospace;
+            background-color: #f4f6f8;
+            padding: 30px;
+            color: #333;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        h2 { margin-top: 0; color: #2c3e50; }
+        .controls-info {
+            background: #eef2f7;
+            padding: 12px;
+            border-left: 4px solid #3498db;
+            margin-bottom: 20px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .editor-wrapper {
+            position: relative;
+            margin-top: 15px;
+        }
+        #svgOverlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 160px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        textarea {
+            width: 100%;
+            height: 160px;
+            padding: 55px 15px 15px 15px;
+            font-size: 20px;
+            font-family: 'Courier New', Courier, monospace;
+            box-sizing: border-box;
+            border: 2px solid #bdc3c7;
+            border-radius: 6px;
+            resize: vertical;
+            line-height: 1.5;
+            background: transparent;
+            color: #2c3e50;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+        .preview-box {
+            margin-top: 25px;
+            padding: 15px;
+            background: #fafafa;
+            border: 1px solid #e1e4e8;
+            border-radius: 6px;
+        }
+        pre {
+            background: #272822;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            max-height: 200px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Ses Nitelikli Metin Editörü</h2>
+    
+    <div class="controls-info">
+        <strong>Kullanım Kılavuzu:</strong><br>
+        • <strong>Kelime/Grup Seçimi & Şiddet/Ton:</strong> Kelimeleri fare ile seçin.<br>
+        &nbsp;&nbsp;- <strong>Alt + Yukarı / Aşağı Ok ($\uparrow$/$\downarrow$):</strong> Ses Şiddeti (0-7, üst ray çentikleri)[cite: 1].<br>
+        &nbsp;&nbsp;- <strong>Alt + Sağ / Sol Ok ($\rightarrow$/$\leftarrow$):</strong> Ses Tonlaması (0-7, alt ray çizgileri)[cite: 1].<br>
+        • <strong>Harf Uzatma:</strong> İmlecin bulunduğu harfte:<br>
+        &nbsp;&nbsp;- <strong>Alt + W:</strong> Harf uzatmasını 1 artırır ($\bar{a} \rightarrow \dot{\bar{a}} \rightarrow \ddot{\bar{a}}$)[cite: 1].<br>
+        &nbsp;&nbsp;- <strong>Alt + S:</strong> Harf uzatmasını 1 azaltır.
+    </div>
+
+    <!-- Yazı Alanı ve SVG Üst Katmanı -->
+    <div class="editor-wrapper">
+        <svg id="svgOverlay"></svg>
+        <textarea id="editorArea" placeholder="Metninizi buraya yazın...">Biz fısıltı ile konuşurken birden bire Ahmet neredesin sesi geldi.</textarea>
+    </div>
+
+    <div class="preview-box">
+        <h3>Arka Planda Üretilen Sadeleştirilmiş JSON Veri Yapısı:</h3>
+        <pre id="jsonOutput"></pre>
+    </div>
+</div>
+
+<script>
+    const editorArea = document.getElementById('editorArea');
+    const svgOverlay = document.getElementById('svgOverlay');
+    const jsonOutput = document.getElementById('jsonOutput');
+
+    let customGroups = []; // { start, end, volume, pitch }
+    let charExtensions = {}; // "wordIdx_charIdx": level
+
+    function getWordList() {
+        return editorArea.value.split(/\s+/).filter(w => w.length > 0);
+    }
+
+    function updateEditorAndVisuals() {
+        const words = getWordList();
+        let activeMetadataList = [];
+
+        customGroups.forEach((grp, gIdx) => {
+            let groupWords = [];
+            for (let i = grp.start; i <= grp.end && i < words.length; i++) {
+                groupWords.push(words[i]);
+            }
+
+            if (groupWords.length > 0 && (grp.volume > 0 || grp.pitch > 0)) {
+                activeMetadataList.push({
+                    groupId: gIdx,
+                    range: { start: grp.start, end: grp.end },
+                    words: groupWords,
+                    volume: grp.volume > 0 ? grp.volume : undefined,
+                    pitch: grp.pitch > 0 ? grp.pitch : undefined
+                });
+            }
+        });
+
+        let extensionList = [];
+        Object.keys(charExtensions).forEach(key => {
+            let level = charExtensions[key];
+            if (level > 0) {
+                let [wIdx, cIdx] = key.split('_').map(Number);
+                if (words[wIdx]) {
+                    extensionList.push({ wordIndex: wIdx, word: words[wIdx], charIndex: cIdx, level: level });
+                }
+            }
+        });
+
+        let outputData = {
+            performanceGroups: activeMetadataList,
+            extensions: extensionList.length > 0 ? extensionList : undefined
+        };
+
+        jsonOutput.innerText = JSON.stringify(outputData, null, 2);
+        renderSVGOverlays();
+    }
+
+    function renderSVGOverlays() {
+        svgOverlay.innerHTML = '';
+        const text = editorArea.value;
+        const words = text.split(/\s+/);
+        
+        let currentX = 15; 
+        let currentY = 48; 
+        let lineHeight = 30;
+        let charWidth = 12;
+
+        let wordCoords = [];
+        words.forEach((w, idx) => {
+            let wordWidth = w.length * charWidth;
+            if (currentX + wordWidth > editorArea.clientWidth - 20) {
+                currentX = 15;
+                currentY += lineHeight;
+            }
+            wordCoords.push({ word: w, x: currentX, y: currentY, width: wordWidth });
+            currentX += wordWidth + 12;
+        });
+
+        // 1. Gruplara ait üst ray (şiddet) ve alt ray (tonlama) çizgileri
+        customGroups.forEach(grp => {
+            if (grp.start >= wordCoords.length || grp.end >= wordCoords.length) return;
+            if (grp.volume === 0 && grp.pitch === 0) return;
+
+            let startObj = wordCoords[grp.start];
+            let endObj = wordCoords[grp.end];
+
+            let rayX1 = startObj.x;
+            let rayX2 = endObj.x + endObj.width;
+            let rayY = startObj.y - 24;
+
+            let line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            line.setAttribute("x1", rayX1);
+            line.setAttribute("y1", rayY);
+            line.setAttribute("x2", rayX2);
+            line.setAttribute("y2", rayY);
+            line.setAttribute("stroke", "#2c3e50");
+            line.setAttribute("stroke-width", "2");
+            svgOverlay.appendChild(line);
+
+            if (grp.volume > 0) {
+                let startX = rayX1 + 2;
+                let tickSpacing = 4;
+                let tickHeight = 10;
+                for (let i = 0; i < grp.volume; i++) {
+                    let tx = startX + (i * tickSpacing);
+                    if (tx < rayX2) {
+                        let tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                        tick.setAttribute("x1", tx);
+                        tick.setAttribute("y1", rayY);
+                        tick.setAttribute("x2", tx);
+                        tick.setAttribute("y2", rayY - tickHeight);
+                        tick.setAttribute("stroke", "#2980b9");
+                        tick.setAttribute("stroke-width", "2");
+                        svgOverlay.appendChild(tick);
+                    }
+                }
+            }
+
+            if (grp.pitch > 0) {
+                let startX = rayX1 + 2;
+                let tickSpacing = 4;
+                let tickHeight = 10;
+                for (let i = 0; i < grp.pitch; i++) {
+                    let tx = startX + (i * tickSpacing);
+                    if (tx < rayX2) {
+                        let pitchTick = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                        pitchTick.setAttribute("x1", tx);
+                        pitchTick.setAttribute("y1", rayY);
+                        pitchTick.setAttribute("x2", tx);
+                        pitchTick.setAttribute("y2", rayY + tickHeight);
+                        pitchTick.setAttribute("stroke", "#e74c3c");
+                        pitchTick.setAttribute("stroke-width", "2");
+                        svgOverlay.appendChild(pitchTick);
+                    }
+                }
+            }
+        });
+
+        // 2. Harf Uzatma İşaretleri (Harfin Hemen Üstü)
+        Object.keys(charExtensions).forEach(key => {
+            let level = charExtensions[key];
+            if (level > 0) {
+                let [wIdx, cIdx] = key.split('_').map(Number);
+                if (wordCoords[wIdx]) {
+                    let wObj = wordCoords[wIdx];
+                    let cx = wObj.x + (cIdx * charWidth) + (charWidth / 2);
+                    let charBaselineY = wObj.y - 4;
+
+                    let bar = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                    bar.setAttribute("x1", cx - 5);
+                    bar.setAttribute("y1", charBaselineY);
+                    bar.setAttribute("x2", cx + 5);
+                    bar.setAttribute("y2", charBaselineY);
+                    bar.setAttribute("stroke", "#c0392b");
+                    bar.setAttribute("stroke-width", "2");
+                    svgOverlay.appendChild(bar);
+
+                    if (level >= 2) {
+                        let dot1 = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                        dot1.setAttribute("cx", cx);
+                        dot1.setAttribute("cy", charBaselineY - 4);
+                        dot1.setAttribute("r", "1.5");
+                        dot1.setAttribute("fill", "#c0392b");
+                        svgOverlay.appendChild(dot1);
+                    }
+                    if (level >= 3) {
+                        let dotLeft = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                        dotLeft.setAttribute("cx", cx - 2);
+                        dotLeft.setAttribute("cy", charBaselineY - 4);
+                        dotLeft.setAttribute("r", "1.5");
+                        dotLeft.setAttribute("fill", "#c0392b");
+                        svgOverlay.appendChild(dotLeft);
+
+                        let dotRight = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                        dotRight.setAttribute("cx", cx + 2);
+                        dotRight.setAttribute("cy", charBaselineY - 4);
+                        dotRight.setAttribute("r", "1.5");
+                        dotRight.setAttribute("fill", "#c0392b");
+                        svgOverlay.appendChild(dotRight);
+                    }
+                    if (level >= 4) {
+                        let dotTop = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                        dotTop.setAttribute("cx", cx);
+                        dotTop.setAttribute("cy", charBaselineY - 8);
+                        dotTop.setAttribute("r", "1.5");
+                        dotTop.setAttribute("fill", "#c0392b");
+                        svgOverlay.appendChild(dotTop);
+                    }
+                }
+            }
+        });
+    }
+
+    function getCursorWordAndCharIndex() {
+        const text = editorArea.value;
+        const pos = editorArea.selectionStart;
+
+        let words = text.split(/\s+/);
+        let currentPos = 0;
+        let wordIdx = -1;
+        let charIdx = 0;
+
+        for (let i = 0; i < words.length; i++) {
+            let w = words[i];
+            let wLen = w.length;
+            if (pos >= currentPos && pos <= currentPos + wLen) {
+                wordIdx = i;
+                charIdx = Math.max(0, pos - currentPos - 1);
+                break;
+            }
+            currentPos += wLen + 1;
+        }
+
+        if (wordIdx === -1) wordIdx = words.length - 1;
+        return { wordIdx, charIdx };
+    }
+
+    function getSelectionWordRange() {
+        const text = editorArea.value;
+        const selStart = editorArea.selectionStart;
+        const selEnd = editorArea.selectionEnd;
+
+        let words = text.split(/\s+/);
+        let currentPos = 0;
+        let startWordIdx = -1;
+        let endWordIdx = -1;
+
+        for (let i = 0; i < words.length; i++) {
+            let w = words[i];
+            let wLen = w.length;
+            let wStart = currentPos;
+            let wEnd = currentPos + wLen;
+
+            if (selStart >= wStart && selStart <= wEnd) startWordIdx = i;
+            if (selEnd > wStart && selEnd <= wEnd) {
+                endWordIdx = i;
+                break;
+            }
+            currentPos += wLen + 1;
+        }
+
+        if (startWordIdx === -1) startWordIdx = words.length - 1;
+        if (endWordIdx === -1) endWordIdx = startWordIdx;
+
+        return {
+            start: Math.min(startWordIdx, endWordIdx),
+            end: Math.max(startWordIdx, endWordIdx)
+        };
+    }
+
+    editorArea.addEventListener('keydown', (e) => {
+        if (e.altKey) {
+            // 1. Harf Uzatma Kısayolu: Alt + W (Artır) / Alt + S (Azalt)
+            if (e.key.toLowerCase() === 'w' || e.key.toLowerCase() === 's') {
+                let delta = e.key.toLowerCase() === 'w' ? 1 : -1;
+                let cursorInfo = getCursorWordAndCharIndex();
+                let key = `${cursorInfo.wordIdx}_${cursorInfo.charIdx}`;
+                
+                let currentLevel = charExtensions[key] || 0;
+                let newLevel = Math.max(0, Math.min(4, currentLevel + delta));
+
+                if (newLevel === 0) {
+                    delete charExtensions[key];
+                } else {
+                    charExtensions[key] = newLevel;
+                }
+
+                e.preventDefault();
+                updateEditorAndVisuals();
+                return;
+            }
+
+            let range = getSelectionWordRange();
+            
+            // 2. Ses Şiddeti: Alt + Yukarı / Aşağı Ok
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                let delta = e.key === 'ArrowUp' ? 1 : -1;
+                let existingGroup = customGroups.find(g => 
+                    (range.start >= g.start && range.start <= g.end) || 
+                    (range.end >= g.start && range.end <= g.end) ||
+                    (g.start >= range.start && g.start <= range.end)
+                );
+
+                if (existingGroup) {
+                    existingGroup.volume = Math.max(0, Math.min(7, existingGroup.volume + delta));
+                    if (existingGroup.volume === 0 && existingGroup.pitch === 0) {
+                        customGroups = customGroups.filter(g => g !== existingGroup);
+                    }
+                } else if (delta > 0) {
+                    customGroups.push({
+                        start: range.start,
+                        end: range.end,
+                        volume: delta,
+                        pitch: 0
+                    });
+                }
+                
+                e.preventDefault();
+                updateEditorAndVisuals();
+            } 
+            // 3. Tonlama Seviyesi: Alt + Sağ / Sol Ok
+            else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                let delta = e.key === 'ArrowRight' ? 1 : -1;
+                let existingGroup = customGroups.find(g => 
+                    (range.start >= g.start && range.start <= g.end) || 
+                    (range.end >= g.start && range.end <= g.end) ||
+                    (g.start >= range.start && g.start <= range.end)
+                );
+
+                if (existingGroup) {
+                    existingGroup.pitch = Math.max(0, Math.min(7, existingGroup.pitch + delta));
+                    if (existingGroup.volume === 0 && existingGroup.pitch === 0) {
+                        customGroups = customGroups.filter(g => g !== existingGroup);
+                    }
+                } else if (delta > 0) {
+                    customGroups.push({
+                        start: range.start,
+                        end: range.end,
+                        volume: 0,
+                        pitch: delta
+                    });
+                }
+
+                e.preventDefault();
+                updateEditorAndVisuals();
+            }
+        }
+    });
+
+    editorArea.addEventListener('input', () => {
+        updateEditorAndVisuals();
+    });
+
+    window.addEventListener('resize', renderSVGOverlays);
+    updateEditorAndVisuals();
+</script>
+
+</body>
+</html>
